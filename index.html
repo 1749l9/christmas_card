@@ -1,0 +1,2042 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 聖誕明信片與拍立得回憶聖誕樹</title>
+    <!-- 引入自然連筆手寫體 Sacramento / Alex Brush 與襯線體 -->
+    <link href="https://fonts.googleapis.com/css2?family=Alex+Brush&family=Sacramento&family=Playfair+Display:ital,wght@0,500;0,700;1,400&family=Noto+Serif+TC:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <!-- GSAP -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+    <!-- 關鍵：若網址帶有 #share= 或 ?share= (收件者打開連結)，在畫面渲染前直接隱藏編輯頁面 -->
+    <script>
+        if ((window.location.hash && window.location.hash.includes('share=')) ||
+            (window.location.search && window.location.search.includes('share='))) {
+            document.documentElement.classList.add('is-shared-view');
+        }
+    </script>
+
+    <!-- Three.js Import Map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            margin: 0; overflow: hidden;
+            background: radial-gradient(circle at 50% 25%, #1a2a44 0%, #0d1627 60%, #070c16 100%);
+            font-family: 'Noto Serif TC', serif; user-select: none;
+        }
+        #canvas-container { position: fixed; inset: 0; z-index: 1; pointer-events: auto; }
+
+        /* 收件者打開分享連結時，強制隱藏編輯介面 */
+        html.is-shared-view #edit-overlay {
+            display: none !important;
+        }
+        
+        /* 復古奶油明信片紙質紋理 */
+        .postcard-bg {
+            background-color: #F7F3EB;
+            background-image: 
+                radial-gradient(rgba(30, 70, 50, 0.04) 1px, transparent 0),
+                radial-gradient(rgba(180, 40, 40, 0.03) 1px, #F7F3EB 0);
+            background-size: 24px 24px;
+            background-position: 0 0, 12px 12px;
+            box-shadow: 0 25px 65px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(31,78,61,0.15);
+        }
+
+        /* 透明感星空飄雪覆蓋層 */
+        .snowy-backdrop {
+            background: radial-gradient(circle at center, rgba(16, 28, 48, 0.22) 0%, rgba(8, 14, 26, 0.45) 100%);
+            backdrop-filter: blur(2px);
+        }
+
+        .dotted-input {
+            background: transparent;
+            border: none;
+            border-bottom: 2px dotted #1F4E3D;
+            color: #1F4E3D;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        .dotted-input:focus { border-bottom-color: #B8292F; }
+
+        /* 自然連筆英文手寫字體 */
+        .script-heading {
+            font-family: 'Alex Brush', 'Sacramento', cursive;
+            font-style: normal;
+            font-weight: 400;
+            letter-spacing: 0px;
+            font-kerning: normal;
+            font-variant-ligatures: common-ligatures;
+            color: #B8292F;
+        }
+
+        /* 攝影機預覽視窗 */
+        #webcam-wrapper {
+            position: fixed; bottom: 20px; right: 20px; width: 200px; height: 150px;
+            border-radius: 14px; overflow: hidden; z-index: 30;
+            border: 2px solid rgba(247, 243, 235, 0.4);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.6);
+            background: #000; display: none;
+        }
+        #webcam-canvas { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+
+        /* 複製連結成功提示 Toast */
+        #toast-msg {
+            position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+            background: #1F4E3D; color: #F7F3EB; padding: 12px 28px;
+            border-radius: 999px; font-size: 0.9rem; font-weight: 600;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5); z-index: 100;
+            opacity: 0; pointer-events: none; transition: opacity 0.35s ease;
+            max-width: 90vw; text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 3D 畫布 (底層持續飄雪) -->
+    <div id="canvas-container"></div>
+
+    <!-- 訊息提示 Toast -->
+    <div id="toast-msg">✓ 已複製專屬祝福連結！</div>
+
+    <!-- 右下角攝影機骨架畫面 -->
+    <div id="webcam-wrapper">
+        <video id="webcam-video" class="hidden" autoplay playsinline></video>
+        <canvas id="webcam-canvas" width="320" height="240"></canvas>
+    </div>
+
+    <!-- ================= 前置編輯介面 ================= -->
+    <div id="edit-overlay" class="snowy-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 transition-opacity duration-700">
+        <div class="postcard-bg relative w-full max-w-4xl rounded-xl p-6 md:p-10 text-[#1F4E3D]">
+            
+            <div class="grid md:grid-cols-12 gap-8 items-center">
+                
+                <!-- 左欄：圖一「星星下方留白開口」的一筆畫聖誕樹插畫 -->
+                <div class="md:col-span-5 flex flex-col justify-center items-center border-b md:border-b-0 md:border-r-2 border-[#1F4E3D]/30 pb-6 md:pb-0 md:pr-8 h-full">
+                    <svg viewBox="0 0 240 310" class="w-56 h-72">
+                        <path d="M 154,119
+                                 C 162,122 168,115 162,108
+                                 C 150,94 134,74 127,52
+                                 L 140,60 L 135,43 L 148,31 L 130,29 L 120,12 L 110,29 L 92,31 L 105,43 L 100,60 L 113,52
+                                 M 112,68
+                                 C 104,85 91,105 75,113
+                                 C 63,118 67,95 85,99
+                                 C 106,104 134,122 150,120
+                                 C 160,118 152,104 138,112
+                                 C 118,124 85,158 58,163
+                                 C 42,165 50,136 80,142
+                                 C 115,149 156,174 176,170
+                                 C 190,167 175,142 150,152
+                                 C 118,165 75,208 40,213
+                                 C 18,216 32,180 72,187
+                                 C 120,196 175,226 202,222
+                                 C 220,218 200,188 164,199
+                                 C 122,212 62,258 20,262
+                                 C -2,264 12,228 60,236
+                                 C 118,246 188,274 220,268
+                                 C 242,264 222,232 176,242
+                                 C 146,248 128,258 125,274
+                                 C 123,286 132,296 128,302
+                                 C 122,308 104,308 99,302
+                                 C 95,296 105,284 104,270
+                                 C 103,260 98,255 92,253"
+                              fill="none" stroke="#1F4E3D" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+
+                <!-- 右欄：明信片書寫區 -->
+                <div class="md:col-span-7 flex flex-col justify-between">
+                    
+                    <!-- 頂部：統一規格的聖誕帽郵戳與雪花郵票 -->
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h2 class="script-heading text-5xl md:text-6xl leading-none drop-shadow-sm">
+                                Merry Christmas!
+                            </h2>
+                            <p class="text-xs text-[#1F4E3D]/70 mt-1">寫下祝福並挑選照片，封裝進您的專屬 3D 聖誕樹中</p>
+                        </div>
+
+                        <div class="stamp-postmark-slot relative flex items-center select-none shrink-0"></div>
+                    </div>
+
+                    <!-- 中段：TO / 祝福語 / FROM -->
+                    <div class="space-y-3 my-4">
+                        <div class="flex items-center gap-2">
+                            <span class="font-bold text-sm tracking-widest text-[#1F4E3D]">TO:</span>
+                            <input id="card-to" type="text" maxlength="25" placeholder="My Dearest Friend" class="dotted-input flex-1 py-0.5 text-base font-semibold">
+                        </div>
+
+                        <div>
+                            <textarea id="card-text" rows="3" maxlength="100" class="w-full p-3 rounded-lg bg-white/60 border border-[#1F4E3D]/25 text-[#1F4E3D] placeholder-[#1F4E3D]/40 focus:outline-none focus:border-[#B8292F] resize-none text-sm leading-relaxed" placeholder="May your holidays sparkle with joy and laughter! Wishing you a wonderful Christmas."></textarea>
+                            <div class="text-right text-[11px] text-[#1F4E3D]/60 mt-0.5"><span id="char-count">0</span> / 100 字</div>
+                        </div>
+
+                        <div class="flex items-center gap-2">
+                            <span class="font-bold text-sm tracking-widest text-[#1F4E3D]">FROM:</span>
+                            <input id="card-from" type="text" maxlength="25" placeholder="With Love" class="dotted-input flex-1 py-0.5 text-base font-semibold">
+                        </div>
+                    </div>
+
+                    <!-- 底部：拍立得照片上傳與啟動按鈕 -->
+                    <div class="space-y-3 pt-2 border-t border-[#1F4E3D]/20">
+                        <div class="flex items-center justify-between gap-3">
+                            <label for="card-images" class="flex-1 cursor-pointer py-2.5 px-4 rounded-lg border-2 border-dashed border-[#1F4E3D]/40 hover:border-[#B8292F] bg-white/50 hover:bg-white/80 transition flex items-center justify-center gap-2 text-xs font-bold text-[#1F4E3D]">
+                                <span>📸 挑選回憶照片掛上聖誕樹</span>
+                                <span id="upload-status" class="text-[#B8292F]">(已選 0/10 張)</span>
+                            </label>
+                            <input type="file" id="card-images" accept="image/*" multiple class="hidden">
+                        </div>
+
+                        <!-- 拍立得縮圖預覽列 -->
+                        <div id="photo-preview-strip" class="flex gap-2.5 overflow-x-auto py-1 hidden"></div>
+
+                        <button id="start-btn" type="button" class="w-full py-3.5 bg-[#B8292F] hover:bg-[#991f24] text-[#F7F3EB] font-bold rounded-lg shadow-lg transition transform hover:-translate-y-0.5 tracking-wider text-base flex items-center justify-center gap-2">
+                            <span>✉️ 封裝明信片並開始體驗</span>
+                        </button>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= 結束畫面 ================= -->
+    <div id="ending-overlay" class="snowy-backdrop fixed inset-0 z-50 hidden items-center justify-center p-4 opacity-0 transition-opacity duration-1000">
+        <div class="postcard-bg relative w-full max-w-2xl rounded-xl px-8 pt-6 pb-10 md:px-12 md:pt-8 md:pb-11 text-[#1F4E3D] text-center border-2 border-[#1F4E3D]/20">
+            <!-- 四角復古邊框裝飾 -->
+            <div class="absolute inset-3 border-2 border-[#1F4E3D] pointer-events-none"></div>
+            <div class="absolute inset-4 border border-[#B8292F]/40 pointer-events-none"></div>
+
+            <!-- 右上角與編輯頁面 100% 同款的聖誕帽郵戳與雪花郵票 -->
+            <div class="stamp-postmark-slot flex justify-end items-center relative z-10 -mb-4"></div>
+
+            <!-- 中央可愛蝴蝶結與松枝手繪插畫 -->
+            <div class="flex justify-center -mt-2 mb-2 relative z-10">
+                <svg viewBox="0 0 160 80" class="w-36 h-18">
+                    <path d="M15,45 Q50,35 80,40 Q110,35 145,45" fill="none" stroke="#1F4E3D" stroke-width="3" stroke-linecap="round"/>
+                    <path d="M30,35 L45,41 M50,32 L62,39 M130,35 L115,41 M110,32 L98,39" stroke="#1F4E3D" stroke-width="2.5" stroke-linecap="round"/>
+                    <path d="M80,40 C60,18 42,26 48,42 C53,55 70,46 80,40 Z" fill="#B8292F" stroke="#1F4E3D" stroke-width="2"/>
+                    <path d="M80,40 C100,18 118,26 112,42 C107,55 90,46 80,40 Z" fill="#B8292F" stroke="#1F4E3D" stroke-width="2"/>
+                    <path d="M76,43 L62,68 L72,64 L78,46" fill="#B8292F" stroke="#1F4E3D" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M84,43 L98,68 L88,64 L82,46" fill="#B8292F" stroke="#1F4E3D" stroke-width="2" stroke-linejoin="round"/>
+                    <circle cx="80" cy="40" r="6" fill="#D4AF37" stroke="#1F4E3D" stroke-width="2"/>
+                </svg>
+            </div>
+
+            <!-- 主祝福英文標題 -->
+            <div class="mt-1 mb-9 px-2 relative z-10">
+                <div class="script-heading text-5xl md:text-6xl leading-snug">
+                    Wishing you a wonderful
+                </div>
+                <div class="script-heading text-6xl md:text-7xl leading-snug mt-1">
+                    Christmas!
+                </div>
+            </div>
+
+            <!-- 互動與分享按鈕列 -->
+            <div class="flex flex-wrap items-center justify-center gap-3.5 relative z-10">
+                <button id="replay-tree-btn" class="px-5 py-2.5 rounded-full border-2 border-[#1F4E3D] text-[#1F4E3D] hover:bg-[#1F4E3D] hover:text-[#F7F3EB] text-sm font-bold transition">
+                    🎄 再次欣賞聖誕樹
+                </button>
+                <button id="copy-link-end-btn" class="px-5 py-2.5 rounded-full bg-[#1F4E3D] text-[#F7F3EB] hover:bg-[#143529] text-sm font-bold shadow-md transition">
+                    🔗 複製連結分享給好友
+                </button>
+                <button onclick="window.location.hash=''; window.location.search=''; window.location.reload();" class="px-5 py-2.5 rounded-full bg-[#B8292F] text-[#F7F3EB] hover:bg-[#961f24] text-sm font-bold shadow-md transition">
+                    ✨ 製作新的賀卡
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= 核心 3D、雙層前景抗穿模渲染、高畫質分享連結編碼邏輯 ================= -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // 統一產生郵標 SVG
+        const UNIFIED_STAMP_SVG = `
+            <svg viewBox="0 0 210 95" class="w-40 h-20">
+                <path d="M 6,34 Q 24,25 42,34 T 78,34 M 6,47 Q 24,38 42,47 T 78,47 M 6,60 Q 24,51 42,60 T 78,60" fill="none" stroke="#1F4E3D" stroke-width="2.2" stroke-linecap="round"/>
+                <rect x="132" y="8" width="68" height="78" fill="#F7F3EB" stroke="#B8292F" stroke-width="3.2" stroke-dasharray="7,5"/>
+                <rect x="140" y="16" width="52" height="62" fill="none" stroke="#B8292F" stroke-width="1.5"/>
+                <g transform="translate(166, 47)" stroke="#B8292F" stroke-width="2" stroke-linecap="round">
+                    <line x1="0" y1="-16" x2="0" y2="16"/><line x1="-14" y1="-8" x2="14" y2="8"/><line x1="-14" y1="8" x2="14" y2="-8"/>
+                    <path d="M-4,-11 L0,-7 L4,-11 M-4,11 L0,7 L4,11 M-11,-2 L-6,-3 L-7,-8 M11,2 L6,3 L7,8 M-7,8 L-6,3 L-11,2 M7,-8 L6,-3 L11,-2" fill="none"/>
+                </g>
+                <circle cx="110" cy="47" r="28" fill="none" stroke="#1F4E3D" stroke-width="2.2" stroke-dasharray="4,3"/>
+                <circle cx="110" cy="47" r="22" fill="none" stroke="#1F4E3D" stroke-width="1.6"/>
+                <g transform="translate(110, 49)">
+                    <path d="M -11,4 C -9,-10 2,-15 11,-6 C 8,-2 5,1 4,4 Z" fill="#1F4E3D"/>
+                    <rect x="-13" y="3" width="21" height="5" rx="2.5" fill="#F7F3EB" stroke="#1F4E3D" stroke-width="1.6"/>
+                    <circle cx="12" cy="-5" r="3.5" fill="#F7F3EB" stroke="#1F4E3D" stroke-width="1.6"/>
+                </g>
+            </svg>
+        `;
+        document.querySelectorAll('.stamp-postmark-slot').forEach(el => { el.innerHTML = UNIFIED_STAMP_SVG; });
+
+        // --- 全域狀態 ---
+        const State = {
+            mode: 'EDIT', // EDIT -> CARD_CLOSED -> CARD_OPEN -> TREE_VIEW -> PHOTO_ZOOM -> ENDING
+            glbCandidates: ['./christmas_tree.glb', 'christmas_tree.glb', './base_basic_shaded.glb'],
+            loadedGLTF: null,
+            toText: 'My Dearest Friend',
+            bodyText: 'May your holidays sparkle with joy and laughter! Wishing you a wonderful Christmas.',
+            fromText: 'With Love',
+            rawImageURLs: [],
+            shareImageURLs: [],
+            activePolaroid: null,
+            viewedSet: new Set(),
+            isAnimating: false,
+            handX: 0.5
+        };
+
+        let scene, overlayScene, camera, renderer, controls;
+        let cardGroup, cardLeftPivot, cardRightPivot, cardInnerRightMesh, cardInnerLeftMesh, cardCoverMesh;
+        let treeRootGroup, treeModelGroup, polaroids = [];
+        let snowSystem, magicEffects = [];
+        let audioCtx;
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        const clock = new THREE.Clock();
+
+        function showToast(msg) {
+            const t = document.getElementById('toast-msg');
+            t.innerText = msg;
+            t.style.opacity = '1';
+            setTimeout(() => { t.style.opacity = '0'; }, 3200);
+        }
+
+        // 【修正第 2 點】提升分享連結內的圖片清晰度：
+        // 預先裁切為拍立得所需的 1:1 正方形中心區，並將解析度從 220px 大幅提升至 800x800px，優先採用高壓縮比 WebP (0.86 畫質)
+        function compressImageForShare(file, targetSize = 800, quality = 0.86) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const minSide = Math.min(img.width, img.height);
+                        const finalDim = Math.min(minSide, targetSize);
+                        canvas.width = finalDim;
+                        canvas.height = finalDim;
+
+                        const ctx = canvas.getContext('2d');
+                        ctx.imageSmoothingEnabled = true;
+                        ctx.imageSmoothingQuality = 'high';
+
+                        // 正中心正方形裁切，把所有像素都保留給拍立得顯示區域，字跡與細節清晰銳利
+                        const sx = (img.width - minSide) / 2;
+                        const sy = (img.height - minSide) / 2;
+                        ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, finalDim, finalDim);
+
+                        // 優先使用 WebP 格式 (相同檔案大小下畫質比 JPEG 清晰 40% 以上)
+                        let dataUrl = canvas.toDataURL('image/webp', quality);
+                        if (!dataUrl.startsWith('data:image/webp')) {
+                            dataUrl = canvas.toDataURL('image/jpeg', quality);
+                        }
+                        resolve(dataUrl);
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // 支援 gzip 串流壓縮的 URL-Safe Base64 編碼器與解碼器
+        async function encodeSharePayload(obj) {
+            const jsonStr = JSON.stringify(obj);
+            const utf8Bytes = new TextEncoder().encode(jsonStr);
+
+            if (typeof CompressionStream !== 'undefined') {
+                try {
+                    const cs = new CompressionStream('deflate-raw');
+                    const writer = cs.writable.getWriter();
+                    writer.write(utf8Bytes);
+                    writer.close();
+                    const compressedBuf = await new Response(cs.readable).arrayBuffer();
+                    const compressedBytes = new Uint8Array(compressedBuf);
+                    let binaryStr = '';
+                    for (let i = 0; i < compressedBytes.length; i++) {
+                        binaryStr += String.fromCharCode(compressedBytes[i]);
+                    }
+                    return 'z_' + btoa(binaryStr).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                } catch (e) {}
+            }
+
+            let binaryStr = '';
+            for (let i = 0; i < utf8Bytes.length; i++) {
+                binaryStr += String.fromCharCode(utf8Bytes[i]);
+            }
+            return btoa(binaryStr).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+
+        async function decodeSharePayload(str) {
+            try {
+                if (str.startsWith('%7B') || str.startsWith('{')) {
+                    return JSON.parse(decodeURIComponent(str));
+                }
+                const isCompressed = str.startsWith('z_');
+                let rawB64 = isCompressed ? str.slice(2) : str;
+                let b64 = rawB64.replace(/-/g, '+').replace(/_/g, '/');
+                while (b64.length % 4) b64 += '=';
+
+                const binaryStr = atob(b64);
+                const bytes = new Uint8Array(binaryStr.length);
+                for (let i = 0; i < binaryStr.length; i++) {
+                    bytes[i] = binaryStr.charCodeAt(i);
+                }
+
+                if (isCompressed && typeof DecompressionStream !== 'undefined') {
+                    const ds = new DecompressionStream('deflate-raw');
+                    const writer = ds.writable.getWriter();
+                    writer.write(bytes);
+                    writer.close();
+                    const decompressedBuf = await new Response(ds.readable).arrayBuffer();
+                    const jsonStr = new TextDecoder().decode(new Uint8Array(decompressedBuf));
+                    return JSON.parse(jsonStr);
+                }
+
+                const jsonStr = new TextDecoder().decode(bytes);
+                return JSON.parse(jsonStr);
+            } catch (e) {
+                console.warn('分享連結解碼失敗:', e);
+                return null;
+            }
+        }
+
+        // 【修正第 1 點】刪除本機 127.0.0.1 提醒文字，只顯示純淨的複製成功提示
+        async function generateAndCopyShareLink() {
+            const payload = {
+                t: State.toText,
+                b: State.bodyText,
+                f: State.fromText,
+                imgs: State.shareImageURLs.length > 0 ? State.shareImageURLs : State.rawImageURLs
+            };
+
+            try {
+                const encoded = await encodeSharePayload(payload);
+                const baseUrl = window.location.href.split('#')[0].split('?')[0];
+                const shareUrl = `${baseUrl}#share=${encoded}`;
+                window.history.replaceState(null, '', `#share=${encoded}`);
+
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(shareUrl);
+                } else {
+                    const tempInput = document.createElement('textarea');
+                    tempInput.value = shareUrl;
+                    document.body.appendChild(tempInput);
+                    tempInput.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(tempInput);
+                }
+
+                showToast('✓ 已複製專屬祝福連結！');
+            } catch (err) {
+                showToast('✓ 已複製專屬祝福連結！');
+            }
+        }
+
+        async function checkSharedDataFromURL() {
+            let rawParam = null;
+            if (window.location.hash && window.location.hash.includes('share=')) {
+                rawParam = window.location.hash.split('share=')[1];
+            } else if (window.location.search && window.location.search.includes('share=')) {
+                rawParam = new URLSearchParams(window.location.search).get('share');
+            }
+            if (rawParam) {
+                const data = await decodeSharePayload(rawParam);
+                if (data) {
+                    if (data.t) State.toText = data.t;
+                    if (data.b) State.bodyText = data.b;
+                    if (data.f) State.fromText = data.f;
+                    if (Array.isArray(data.imgs) && data.imgs.length > 0) {
+                        State.rawImageURLs = data.imgs;
+                        State.shareImageURLs = data.imgs;
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // --- 音效合成器 ---
+        function playSound(type = 'chime') {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const now = audioCtx.currentTime;
+                const notes = type === 'open'
+                    ? [523.25, 659.25, 783.99, 1046.5]
+                    : type === 'finale'
+                    ? [523.25, 659.25, 783.99, 987.77, 1046.5, 1318.5]
+                    : [783.99, 987.77, 1174.66];
+                notes.forEach((freq, idx) => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(freq, now + idx * 0.09);
+                    gain.gain.setValueAtTime(0.12, now + idx * 0.09);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.09 + 0.85);
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    osc.start(now + idx * 0.09);
+                    osc.stop(now + idx * 0.09 + 0.85);
+                });
+            } catch (e) {}
+        }
+
+        // --- 初始化 Three.js ---
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0f1c30);
+            scene.fog = new THREE.FogExp2(0x0f1c30, 0.012);
+
+            overlayScene = new THREE.Scene();
+            const overlayHemi = new THREE.HemisphereLight(0xfff8ed, 0x1b2838, 1.35);
+            const overlayDir = new THREE.DirectionalLight(0xfff2e2, 1.4);
+            overlayDir.position.set(4, 8, 10);
+            overlayScene.add(overlayHemi, overlayDir);
+
+            camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.2, 11.5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.NoToneMapping;
+            renderer.autoClear = false;
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            const hemiLight = new THREE.HemisphereLight(0xfff8ed, 0x1b2838, 1.2);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xfff2e2, 1.35);
+            dirLight.position.set(5, 11, 8);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.set(2048, 2048);
+            dirLight.shadow.bias = -0.0005;
+            scene.add(dirLight);
+
+            const warmFillLight = new THREE.PointLight(0xffaa55, 1.1, 20);
+            warmFillLight.position.set(-5, 3, 6);
+            scene.add(warmFillLight);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.06;
+            controls.enablePan = false;
+            controls.minDistance = 5.2;
+            controls.maxDistance = 20;
+            controls.target.set(0, 0.9, 0);
+
+            createSnowParticles();
+            createPostcard3D();
+
+            treeRootGroup = new THREE.Group();
+            treeRootGroup.position.set(0, -2.15, 0);
+            treeRootGroup.scale.set(0.001, 0.001, 0.001);
+            treeRootGroup.visible = false;
+            scene.add(treeRootGroup);
+
+            window.addEventListener('resize', onResize);
+            window.addEventListener('pointerdown', onPointerDown);
+        }
+
+        function preloadDefaultGLB(onReadyCallback) {
+            const loader = new GLTFLoader();
+            function tryNext(index) {
+                if (index >= State.glbCandidates.length) {
+                    if (onReadyCallback) onReadyCallback(false);
+                    return;
+                }
+                const url = State.glbCandidates[index];
+                loader.load(
+                    url,
+                    (gltf) => {
+                        State.loadedGLTF = gltf;
+                        if (onReadyCallback) onReadyCallback(true);
+                    },
+                    undefined,
+                    () => tryNext(index + 1)
+                );
+            }
+            tryNext(0);
+        }
+
+        // =========================================================================
+        // 1. 繪製「圖一：星星下方保留開口留白」的一筆畫聖誕樹
+        // =========================================================================
+        function drawFigure1OneLineTree(ctx, centerX, topY, scale = 1.0) {
+            ctx.save();
+            ctx.translate(centerX, topY);
+            ctx.scale(scale, scale);
+            ctx.translate(-120, 0);
+
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 5.5;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            const pathStr = `
+                M 154,119
+                C 162,122 168,115 162,108
+                C 150,94 134,74 127,52
+                L 140,60 L 135,43 L 148,31 L 130,29 L 120,12 L 110,29 L 92,31 L 105,43 L 100,60 L 113,52
+                M 112,68
+                C 104,85 91,105 75,113
+                C 63,118 67,95 85,99
+                C 106,104 134,122 150,120
+                C 160,118 152,104 138,112
+                C 118,124 85,158 58,163
+                C 42,165 50,136 80,142
+                C 115,149 156,174 176,170
+                C 190,167 175,142 150,152
+                C 118,165 75,208 40,213
+                C 18,216 32,180 72,187
+                C 120,196 175,226 202,222
+                C 220,218 200,188 164,199
+                C 122,212 62,258 20,262
+                C -2,264 12,228 60,236
+                C 118,246 188,274 220,268
+                C 242,264 222,232 176,242
+                C 146,248 128,258 125,274
+                C 123,286 132,296 128,302
+                C 122,308 104,308 99,302
+                C 95,296 105,284 104,270
+                C 103,260 98,255 92,253
+            `;
+            ctx.stroke(new Path2D(pathStr));
+            ctx.restore();
+        }
+
+        // =========================================================================
+        // 2. 繪製「圖二：背著禮物袋飛躍的聖誕馴鹿與雙松樹、星芒雪花」一筆畫插畫
+        // =========================================================================
+        function drawFigure2GiftReindeerScene(ctx, centerX, topY, scale = 1.0) {
+            ctx.save();
+            ctx.translate(centerX, topY);
+            ctx.scale(scale, scale);
+            ctx.translate(-300, 0);
+
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 4.2;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            const headAndAntlers = new Path2D(`
+                M 192,228
+                A 11,11 0 1,1 192,206
+                A 11,11 0 1,1 192,228
+                M 196,208
+                C 214,202 232,197 248,195
+                C 244,176 248,155 242,144
+                C 236,134 228,136 232,144
+                C 237,152 246,154 252,146
+                C 258,136 262,120 256,110
+                C 250,102 243,106 248,115
+                C 254,124 260,126 264,116
+                C 268,104 268,88 260,78
+                C 255,72 262,68 268,78
+                C 274,90 272,115 264,142
+                C 258,162 254,178 255,190
+                C 265,172 276,155 282,140
+                C 278,128 270,124 274,118
+                C 278,113 284,122 287,130
+                C 294,116 294,98 288,86
+                C 285,80 291,76 296,86
+                C 302,98 300,115 294,132
+                C 302,116 306,92 305,74
+                C 305,66 311,68 311,80
+                C 311,105 300,138 286,162
+                C 274,182 266,192 264,198
+                C 272,188 286,182 292,184
+                C 288,196 276,204 266,202
+                M 264,198
+                C 260,218 260,242 264,262
+                C 268,282 276,298 285,308
+                M 195,226
+                C 210,238 228,244 242,240
+                C 248,238 248,232 240,235
+                C 234,238 228,242 228,252
+                C 228,272 222,292 214,308
+            `);
+            ctx.stroke(headAndAntlers);
+
+            const collarAndBell = new Path2D(`
+                M 212,298
+                C 232,302 254,292 268,274
+                C 272,270 276,275 272,282
+                C 258,302 234,312 212,306
+                M 212,306
+                A 10,10 0 1,1 196,316
+                A 10,10 0 1,1 212,306
+                M 196,317 L 203,313
+            `);
+            ctx.stroke(collarAndBell);
+
+            const bodyAndLegs = new Path2D(`
+                M 214,308
+                C 206,328 202,348 216,356
+                C 226,360 226,348 214,344
+                C 198,338 176,328 164,330
+                C 152,332 152,348 160,368
+                C 168,388 172,408 178,422
+                C 184,432 194,436 194,424
+                C 194,412 186,405 182,408
+                C 188,402 184,388 180,374
+                C 176,360 172,350 170,348
+                C 182,356 202,372 222,386
+                C 246,402 276,404 316,408
+                C 332,410 342,422 352,438
+                C 365,458 388,472 412,485
+                C 425,492 432,512 442,535
+                C 450,552 462,566 472,568
+                C 474,555 470,542 460,542
+                C 465,536 456,518 446,494
+                C 436,470 422,452 418,430
+                C 415,412 420,392 418,378
+                C 428,372 438,362 436,346
+                C 430,356 420,362 410,360
+                C 398,350 388,344 374,346
+            `);
+            ctx.stroke(bodyAndLegs);
+
+            const giftSack = new Path2D(`
+                M 275,326
+                C 272,298 286,272 308,262
+                C 300,254 298,244 306,244
+                C 322,258 352,268 384,268
+                M 392,282
+                C 406,282 414,274 412,266
+                C 410,260 398,262 390,266
+                M 406,280
+                C 420,302 418,334 398,346
+                C 378,352 332,348 302,336
+                C 284,330 276,328 275,326
+                M 304,254
+                C 318,268 342,276 356,276
+                M 366,274
+                L 354,264 L 352,278 L 366,274
+                L 382,266 L 382,280 L 366,274
+                L 352,296 L 344,292 L 360,275
+                M 366,274
+                L 378,298 L 368,302 L 362,276
+            `);
+            ctx.stroke(giftSack);
+
+            const saddleBlanket = new Path2D(`
+                M 276,318
+                C 264,338 268,372 292,386
+                C 316,400 352,388 364,346
+                M 282,324
+                C 272,342 276,368 296,380
+                C 316,390 344,380 355,346
+                M 276,332 Q 284,336 278,344 Q 286,348 282,356 Q 290,360 288,368 Q 298,368 298,376 Q 308,374 312,382 Q 320,374 326,380 Q 332,370 340,372 Q 342,360 350,358
+            `);
+            ctx.stroke(saddleBlanket);
+
+            const giftBoxes = new Path2D(`
+                M 310,256 L 304,232 L 336,224 L 344,262
+                M 320,228 L 328,264
+                M 320,228 C 308,218 302,226 316,229
+                M 320,228 C 322,214 332,216 324,227
+                M 342,252 L 352,216 L 398,234 L 386,266
+                M 375,225 L 362,264
+                M 375,225
+                C 356,204 344,216 368,224
+                M 375,225
+                C 362,196 382,192 380,222
+                M 375,225
+                C 398,204 410,220 382,226
+                M 375,225 L 356,242
+                M 375,225 L 386,248
+            `);
+            ctx.stroke(giftBoxes);
+
+            const groundLoopAndTrees = new Path2D(`
+                M 305,388
+                C 296,404 288,412 296,422
+                C 312,438 322,462 316,488
+                C 310,502 294,504 296,496
+                C 298,490 312,492 314,504
+                C 316,522 282,554 238,566
+                C 218,570 206,568 206,562
+                L 220,560 L 204,544 L 214,542 L 198,524 L 206,522 L 194,500
+                L 182,522 L 190,524 L 174,542 L 184,544 L 168,560 L 184,562
+                C 184,570 165,572 146,568
+                C 136,566 136,560 146,558
+                L 164,556 L 144,534 L 158,532 L 138,510 L 152,508 L 132,475
+                L 114,508 L 128,510 L 108,532 L 122,534 L 102,556 L 126,558
+                C 130,566 112,574 86,576
+                C 62,578 46,586 35,596
+            `);
+            ctx.stroke(groundLoopAndTrees);
+
+            const drawStarburst = (sx, sy, outerR) => {
+                ctx.save();
+                ctx.translate(sx, sy);
+                ctx.lineWidth = 3.2;
+                ctx.beginPath();
+                for (let i = 0; i < 8; i++) {
+                    const r = i % 2 === 0 ? outerR : outerR * 0.28;
+                    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+                    if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+                    else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+                }
+                ctx.closePath();
+                ctx.stroke();
+                ctx.restore();
+            };
+
+            const drawSnowflake = (fx, fy, r) => {
+                ctx.save();
+                ctx.translate(fx, fy);
+                ctx.lineWidth = 3.0;
+                for (let i = 0; i < 6; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0); ctx.lineTo(0, -r);
+                    ctx.moveTo(0, -r * 0.58); ctx.lineTo(-r * 0.28, -r * 0.82);
+                    ctx.moveTo(0, -r * 0.58); ctx.lineTo(r * 0.28, -r * 0.82);
+                    ctx.stroke();
+                    ctx.rotate(Math.PI / 3);
+                }
+                ctx.restore();
+            };
+
+            drawStarburst(280, 38, 22);
+            drawStarburst(402, 148, 20);
+            drawStarburst(535, 355, 21);
+            drawStarburst(92, 408, 20);
+            drawStarburst(355, 526, 20);
+
+            drawSnowflake(475, 290, 16);
+            drawSnowflake(492, 422, 20);
+            drawSnowflake(252, 462, 20);
+
+            ctx.restore();
+        }
+
+        function drawUnifiedStampAndSantaPostmark(ctx, rightStampX, topStampY, scale = 1.0) {
+            ctx.save();
+            ctx.translate(rightStampX, topStampY);
+            ctx.scale(scale, scale);
+
+            const sw = 180, sh = 210;
+            ctx.fillStyle = '#F5EFE6';
+            ctx.fillRect(0, 0, sw, sh);
+            ctx.strokeStyle = '#B8292F';
+            ctx.lineWidth = 7;
+            ctx.setLineDash([16, 12]);
+            ctx.strokeRect(0, 0, sw, sh);
+            ctx.setLineDash([]);
+            ctx.lineWidth = 3.5;
+            ctx.strokeRect(20, 20, sw - 40, sh - 40);
+
+            ctx.save();
+            ctx.translate(sw / 2, sh / 2);
+            ctx.strokeStyle = '#B8292F';
+            ctx.lineWidth = 4.5;
+            ctx.lineCap = 'round';
+            for (let i = 0; i < 6; i++) {
+                ctx.beginPath();
+                ctx.moveTo(0, 0); ctx.lineTo(0, -42);
+                ctx.moveTo(0, -25); ctx.lineTo(-11, -36);
+                ctx.moveTo(0, -25); ctx.lineTo(11, -36);
+                ctx.stroke();
+                ctx.rotate(Math.PI / 3);
+            }
+            ctx.restore();
+
+            const cx = -58, cy = sh * 0.52;
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 5.5;
+            ctx.setLineDash([11, 8]);
+            ctx.beginPath(); ctx.arc(cx, cy, 74, 0, Math.PI * 2); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.arc(cx, cy, 58, 0, Math.PI * 2); ctx.stroke();
+
+            ctx.save();
+            ctx.translate(cx, cy + 5);
+            ctx.fillStyle = '#1F4E3D';
+            ctx.beginPath();
+            ctx.moveTo(-29, 10);
+            ctx.bezierCurveTo(-24, -27, 6, -39, 28, -15);
+            ctx.bezierCurveTo(20, -5, 13, 2, 10, 10);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = '#F5EFE6';
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 4.2;
+            ctx.beginPath();
+            ctx.roundRect(-34, 7, 54, 14, 7);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(31, -13, 9.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 5;
+            ctx.lineCap = 'round';
+            [-32, 0, 32].forEach(offsetY => {
+                const wy = cy + offsetY;
+                ctx.beginPath();
+                ctx.moveTo(-325, wy);
+                ctx.quadraticCurveTo(-278, wy - 22, -232, wy);
+                ctx.quadraticCurveTo(-186, wy + 22, -142, wy);
+                ctx.stroke();
+            });
+
+            ctx.restore();
+        }
+
+        // 精繪拍立得底部 4 款聖誕圖案
+        function drawRefinedPolaroidMotif(ctx, cx, cy, scale, type) {
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.scale(scale, scale);
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            if (type === 'gingerbread') {
+                const gingerPath = new Path2D(`
+                    M 0,-26
+                    C 7.5,-26 13,-20.5 13,-13.5
+                    C 13,-10 11,-7 8.5,-5
+                    L 20,-5
+                    C 23.5,-5 26,-2.5 26,0.5
+                    C 26,3.5 23.5,6 20,6
+                    L 10,6
+                    L 14.5,19
+                    C 16,23 13,26.5 9,26.5
+                    C 5.5,26.5 3.5,23.5 2,19
+                    L 0,13.5
+                    L -2,19
+                    C -3.5,23.5 -5.5,26.5 -9,26.5
+                    C -13,26.5 -16,23 -14.5,19
+                    L -10,6
+                    L -20,6
+                    C -23.5,6 -26,3.5 -26,0.5
+                    C -26,-2.5 -23.5,-5 -20,-5
+                    L -8.5,-5
+                    C -11,-7 -13,-10 -13,-13.5
+                    C -13,-20.5 -7.5,-26 0,-26
+                    Z
+                `);
+
+                ctx.strokeStyle = '#5C2F0E';
+                ctx.lineWidth = 4.8;
+                ctx.stroke(gingerPath);
+
+                ctx.fillStyle = '#C47439';
+                ctx.fill(gingerPath);
+
+                ctx.strokeStyle = '#FFFDF9';
+                ctx.lineWidth = 2.2;
+                ctx.beginPath();
+                ctx.moveTo(-18, -3.5); ctx.quadraticCurveTo(-16.5, 0.5, -18, 4.5);
+                ctx.moveTo(18, -3.5); ctx.quadraticCurveTo(16.5, 0.5, 18, 4.5);
+                ctx.moveTo(-12.5, 18); ctx.quadraticCurveTo(-8.5, 16.5, -4.5, 18);
+                ctx.moveTo(4.5, 18); ctx.quadraticCurveTo(8.5, 16.5, 12.5, 18);
+                ctx.stroke();
+
+                ctx.fillStyle = '#FFFDF9';
+                ctx.beginPath(); ctx.arc(-4.5, -15, 2, 0, Math.PI * 2); ctx.arc(4.5, -15, 2, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#E86874';
+                ctx.beginPath(); ctx.arc(-7.5, -12, 2.2, 0, Math.PI * 2); ctx.arc(7.5, -12, 2.2, 0, Math.PI * 2); ctx.fill();
+
+                ctx.strokeStyle = '#FFFDF9';
+                ctx.lineWidth = 2.2;
+                ctx.beginPath(); ctx.arc(0, -12, 4, 0.25, Math.PI - 0.25); ctx.stroke();
+
+                ctx.fillStyle = '#C82832';
+                ctx.beginPath();
+                ctx.moveTo(0, -2.5); ctx.lineTo(-6.5, -6); ctx.lineTo(-6.5, 1); ctx.closePath();
+                ctx.moveTo(0, -2.5); ctx.lineTo(6.5, -6); ctx.lineTo(6.5, 1); ctx.closePath();
+                ctx.fill();
+                ctx.fillStyle = '#2B6E46';
+                ctx.beginPath(); ctx.arc(0, 4.5, 2.6, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#C82832';
+                ctx.beginPath(); ctx.arc(0, 10.5, 2.6, 0, Math.PI * 2); ctx.fill();
+
+            } else if (type === 'bell') {
+                const drawSingleBell = (bx, by, rot) => {
+                    ctx.save();
+                    ctx.translate(bx, by);
+                    ctx.rotate(rot);
+
+                    ctx.fillStyle = '#B87A14';
+                    ctx.strokeStyle = '#6E4506';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath(); ctx.arc(0, 15, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+                    const grad = ctx.createLinearGradient(-12, -12, 12, 14);
+                    grad.addColorStop(0, '#FFE484');
+                    grad.addColorStop(0.5, '#EAB63E');
+                    grad.addColorStop(1, '#C28B1E');
+                    ctx.fillStyle = grad;
+                    ctx.strokeStyle = '#6E4506';
+                    ctx.lineWidth = 2.4;
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, -12);
+                    ctx.bezierCurveTo(-10, -12, -11, 4, -15, 12);
+                    ctx.quadraticCurveTo(0, 15, 15, 12);
+                    ctx.bezierCurveTo(11, 4, 10, -12, 0, -12);
+                    ctx.closePath();
+                    ctx.fill(); ctx.stroke();
+
+                    ctx.strokeStyle = '#FFF3C4';
+                    ctx.lineWidth = 1.8;
+                    ctx.beginPath(); ctx.moveTo(-6, -4); ctx.lineTo(-9, 7); ctx.stroke();
+                    ctx.restore();
+                };
+
+                drawSingleBell(-9, 4, 0.28);
+                drawSingleBell(9, 4, -0.28);
+
+                ctx.fillStyle = '#255F3E';
+                ctx.strokeStyle = '#153B25';
+                ctx.lineWidth = 1.8;
+                [-1, 1].forEach(dir => {
+                    ctx.save();
+                    ctx.translate(0, -9);
+                    ctx.scale(dir, 1);
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.quadraticCurveTo(10, -10, 20, -3);
+                    ctx.quadraticCurveTo(12, 6, 0, 0);
+                    ctx.fill(); ctx.stroke();
+                    ctx.restore();
+                });
+
+                ctx.fillStyle = '#C82832';
+                ctx.strokeStyle = '#7A1118';
+                ctx.lineWidth = 1.6;
+                ctx.beginPath();
+                ctx.ellipse(-7, -8, 7, 4, -0.25, 0, Math.PI * 2);
+                ctx.ellipse(7, -8, 7, 4, 0.25, 0, Math.PI * 2);
+                ctx.fill(); ctx.stroke();
+                ctx.fillStyle = '#FFD15C';
+                ctx.beginPath(); ctx.arc(0, -8, 3.4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+            } else if (type === 'bauble') {
+                ctx.strokeStyle = '#7A550E';
+                ctx.lineWidth = 2.2;
+                ctx.beginPath(); ctx.arc(0, -22, 4, 0, Math.PI * 2); ctx.stroke();
+                ctx.fillStyle = '#E5B84B';
+                ctx.fillRect(-5, -19, 10, 5);
+                ctx.strokeRect(-5, -19, 10, 5);
+
+                const grad = ctx.createRadialGradient(-6, -4, 3, 0, 3, 20);
+                grad.addColorStop(0, '#F0545E');
+                grad.addColorStop(0.65, '#B8242C');
+                grad.addColorStop(1, '#7D1218');
+                ctx.fillStyle = grad;
+                ctx.strokeStyle = '#5E0D12';
+                ctx.lineWidth = 2.4;
+                ctx.beginPath(); ctx.arc(0, 3, 18, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+                ctx.strokeStyle = '#FCE39D';
+                ctx.lineWidth = 1.8;
+                ctx.beginPath();
+                ctx.moveTo(-17, 3); ctx.quadraticCurveTo(0, -3, 17, 3);
+                ctx.moveTo(-15, 9); ctx.quadraticCurveTo(0, 4, 15, 9);
+                ctx.stroke();
+
+                ctx.fillStyle = '#FFFDF7';
+                ctx.beginPath();
+                ctx.moveTo(0, -9); ctx.lineTo(2, -3); ctx.lineTo(8, -1);
+                ctx.lineTo(2, 1); ctx.lineTo(0, 7); ctx.lineTo(-2, 1);
+                ctx.lineTo(-8, -1); ctx.lineTo(-2, -3); ctx.closePath();
+                ctx.fill();
+
+            } else {
+                ctx.strokeStyle = '#5C3818';
+                ctx.lineWidth = 3;
+                [-1, 1].forEach(dir => {
+                    ctx.save();
+                    ctx.scale(dir, 1);
+                    ctx.beginPath();
+                    ctx.moveTo(6, -8); ctx.lineTo(13, -21);
+                    ctx.moveTo(9, -14); ctx.lineTo(16, -15);
+                    ctx.moveTo(11, -18); ctx.lineTo(7, -22);
+                    ctx.stroke();
+                    ctx.restore();
+                });
+
+                ctx.fillStyle = '#B87D4B';
+                ctx.strokeStyle = '#5C3818';
+                ctx.lineWidth = 2.4;
+                ctx.beginPath();
+                ctx.ellipse(-13, -6, 5.5, 3, -0.35, 0, Math.PI * 2);
+                ctx.fill(); ctx.stroke();
+                ctx.beginPath();
+                ctx.ellipse(13, -6, 5.5, 3, 0.35, 0, Math.PI * 2);
+                ctx.fill(); ctx.stroke();
+
+                ctx.beginPath();
+                ctx.arc(0, 2, 12.5, 0, Math.PI * 2);
+                ctx.fill(); ctx.stroke();
+
+                ctx.fillStyle = '#F7E9D7';
+                ctx.beginPath();
+                ctx.ellipse(0, 6.5, 7.5, 5.5, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = '#2B1B0E';
+                ctx.beginPath(); ctx.arc(-5, -1, 1.9, 0, Math.PI * 2); ctx.arc(5, -1, 1.9, 0, Math.PI * 2); ctx.fill();
+
+                ctx.fillStyle = '#D62839';
+                ctx.beginPath(); ctx.arc(0, 4.5, 4.2, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = 'rgba(255,255,255,0.75)';
+                ctx.beginPath(); ctx.arc(-1.2, 3.2, 1.3, 0, Math.PI * 2); ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        function drawPostcardCoverTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 1360;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = '#F5EFE6';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (let i = 0; i < 3500; i++) {
+                ctx.fillStyle = i % 2 === 0 ? 'rgba(31,78,61,0.03)' : 'rgba(184,41,47,0.025)';
+                ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, 2, 2);
+            }
+
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 6;
+            ctx.strokeRect(36, 36, canvas.width - 72, canvas.height - 72);
+            ctx.lineWidth = 2;
+            ctx.strokeRect(50, 50, canvas.width - 100, canvas.height - 100);
+
+            drawUnifiedStampAndSantaPostmark(ctx, 745, 85, 0.96);
+            drawFigure1OneLineTree(ctx, 512, 305, 2.25);
+
+            ctx.fillStyle = '#B8292F';
+            ctx.font = '122px "Alex Brush", "Sacramento", cursive';
+            ctx.textAlign = 'center';
+            ctx.fillText('Merry Christmas!', 512, 1185);
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            return tex;
+        }
+
+        function drawPostcardInnerLeftTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 1360;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = '#F5EFE6';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (let i = 0; i < 3000; i++) {
+                ctx.fillStyle = i % 2 === 0 ? 'rgba(31,78,61,0.028)' : 'rgba(184,41,47,0.022)';
+                ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, 2, 2);
+            }
+
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(45, 45, canvas.width - 90, canvas.height - 90);
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(60, 60, canvas.width - 120, canvas.height - 120);
+
+            drawFigure2GiftReindeerScene(ctx, 505, 195, 1.48);
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            return tex;
+        }
+
+        function drawPostcardInnerRightTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 1360;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = '#F5EFE6';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = '#1F4E3D';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(45, 45, canvas.width - 90, canvas.height - 90);
+
+            drawUnifiedStampAndSantaPostmark(ctx, 755, 85, 0.88);
+
+            ctx.fillStyle = '#B8292F';
+            ctx.font = '112px "Alex Brush", "Sacramento", cursive';
+            ctx.textAlign = 'center';
+            ctx.fillText('Merry Christmas!', 512, 425);
+
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#1F4E3D';
+            ctx.font = '700 40px "Playfair Display", "Noto Serif TC", serif';
+            ctx.fillText(`TO:  ${State.toText || 'My Dearest Friend'}`, 125, 535);
+            ctx.setLineDash([4, 8]);
+            ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(125, 555); ctx.lineTo(900, 555); ctx.stroke();
+
+            ctx.font = '600 42px "Playfair Display", "Noto Serif TC", serif';
+            ctx.fillStyle = '#23382E';
+            const maxWidth = 760;
+            const lineHeight = 82;
+            let y = 660;
+
+            for (let i = 0; i < 5; i++) {
+                const ly = 675 + i * lineHeight;
+                ctx.beginPath(); ctx.moveTo(125, ly); ctx.lineTo(900, ly); ctx.stroke();
+            }
+
+            const paragraphs = (State.bodyText || '').split('\n');
+            paragraphs.forEach(para => {
+                let line = '';
+                for (let i = 0; i < para.length; i++) {
+                    const testLine = line + para[i];
+                    if (ctx.measureText(testLine).width > maxWidth && line.length > 0) {
+                        ctx.fillText(line, 130, y);
+                        line = para[i];
+                        y += lineHeight;
+                    } else {
+                        line = testLine;
+                    }
+                }
+                if (line) {
+                    ctx.fillText(line, 130, y);
+                    y += lineHeight;
+                }
+            });
+
+            ctx.fillStyle = '#1F4E3D';
+            ctx.font = '700 40px "Playfair Display", "Noto Serif TC", serif';
+            ctx.fillText(`FROM:  ${State.fromText || 'With Love'}`, 125, 1165);
+            ctx.beginPath(); ctx.moveTo(125, 1185); ctx.lineTo(900, 1185); ctx.stroke();
+            ctx.setLineDash([]);
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            return tex;
+        }
+
+        function createPostcard3D() {
+            cardGroup = new THREE.Group();
+            cardGroup.position.set(0, 0.8, 0);
+            scene.add(cardGroup);
+
+            const pageW = 3.4, pageH = 4.5, thickness = 0.04;
+            const paperMat = new THREE.MeshBasicMaterial({ color: 0xF5EFE6 });
+
+            cardLeftPivot = new THREE.Group();
+            cardGroup.add(cardLeftPivot);
+
+            const leftCardBody = new THREE.Mesh(new THREE.BoxGeometry(pageW, pageH, thickness), paperMat);
+            leftCardBody.position.set(-pageW / 2, 0, 0);
+            cardLeftPivot.add(leftCardBody);
+
+            cardCoverMesh = new THREE.Mesh(
+                new THREE.PlaneGeometry(pageW, pageH),
+                new THREE.MeshBasicMaterial({ map: drawPostcardCoverTexture() })
+            );
+            cardCoverMesh.position.set(-pageW / 2, 0, -thickness / 2 - 0.003);
+            cardCoverMesh.rotation.y = Math.PI;
+            cardLeftPivot.add(cardCoverMesh);
+
+            cardInnerLeftMesh = new THREE.Mesh(
+                new THREE.PlaneGeometry(pageW, pageH),
+                new THREE.MeshBasicMaterial({ map: drawPostcardInnerLeftTexture() })
+            );
+            cardInnerLeftMesh.position.set(-pageW / 2, 0, thickness / 2 + 0.003);
+            cardLeftPivot.add(cardInnerLeftMesh);
+
+            cardRightPivot = new THREE.Group();
+            cardGroup.add(cardRightPivot);
+
+            const rightCardBody = new THREE.Mesh(new THREE.BoxGeometry(pageW, pageH, thickness), paperMat);
+            rightCardBody.position.set(pageW / 2, 0, -thickness);
+            cardRightPivot.add(rightCardBody);
+
+            cardInnerRightMesh = new THREE.Mesh(
+                new THREE.PlaneGeometry(pageW, pageH),
+                new THREE.MeshBasicMaterial({ map: drawPostcardInnerRightTexture() })
+            );
+            cardInnerRightMesh.position.set(pageW / 2, 0, -thickness / 2 + 0.003);
+            cardRightPivot.add(cardInnerRightMesh);
+
+            cardLeftPivot.rotation.y = Math.PI;
+            cardGroup.position.x = -pageW / 2;
+        }
+
+        // =========================================================================
+        // 載入您的 christmas_tree.glb + 原圖 100% 亮度高解析拍立得
+        // =========================================================================
+        function setupGLBTreeModel(gltf) {
+            if (treeModelGroup) {
+                treeRootGroup.remove(treeModelGroup);
+            }
+            polaroids = [];
+            State.viewedSet.clear();
+            treeModelGroup = new THREE.Group();
+            treeRootGroup.add(treeModelGroup);
+
+            const model = gltf.scene.clone(true);
+            const treeMeshes = [];
+
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    if (child.material) {
+                        const bakedTex = child.material.emissiveMap || child.material.map;
+                        if (bakedTex) {
+                            bakedTex.colorSpace = THREE.SRGBColorSpace;
+                            bakedTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                            child.material = new THREE.MeshBasicMaterial({
+                                map: bakedTex,
+                                side: THREE.DoubleSide
+                            });
+                        }
+                    }
+                    treeMeshes.push(child);
+                }
+            });
+
+            const box = new THREE.Box3().setFromObject(model);
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+
+            const targetHeight = 6.4;
+            const scaleFactor = targetHeight / Math.max(size.y, 0.1);
+            model.scale.setScalar(scaleFactor);
+
+            model.position.set(-center.x * scaleFactor, -box.min.y * scaleFactor, -center.z * scaleFactor);
+            treeModelGroup.add(model);
+            treeRootGroup.updateMatrixWorld(true);
+
+            createHangingPolaroidsOnSurface(treeMeshes, targetHeight, (Math.max(size.x, size.z) / 2) * scaleFactor);
+        }
+
+        function createPolaroidTexture(imageUrl, index, callback) {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 1024;
+                canvas.height = 1240;
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+
+                ctx.fillStyle = '#FCFBF7';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+                ctx.lineWidth = 8;
+                ctx.strokeRect(4, 4, canvas.width - 8, canvas.height - 8);
+
+                const px = 72, py = 72, pw = 880, ph = 880;
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(px, py, pw, ph);
+                ctx.clip();
+
+                const aspect = img.width / img.height;
+                let drawW = pw, drawH = ph;
+                if (aspect > 1) drawW = ph * aspect; else drawH = pw / aspect;
+                ctx.drawImage(img, px + (pw - drawW) / 2, py + (ph - drawH) / 2, drawW, drawH);
+                ctx.restore();
+
+                ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(px, py, pw, ph);
+
+                const motifTypes = ['gingerbread', 'bell', 'bauble', 'reindeer'];
+                drawRefinedPolaroidMotif(ctx, canvas.width / 2, 1094, 2.55, motifTypes[index % motifTypes.length]);
+
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.colorSpace = THREE.SRGBColorSpace;
+                tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                tex.minFilter = THREE.LinearMipmapLinearFilter;
+                tex.magFilter = THREE.LinearFilter;
+                tex.needsUpdate = true;
+                callback(tex);
+            };
+            img.src = imageUrl;
+        }
+
+        function create3DCuteTopper(index) {
+            const group = new THREE.Group();
+            const redMat = new THREE.MeshStandardMaterial({ color: 0xD63845, roughness: 0.35 });
+            const pinkMat = new THREE.MeshStandardMaterial({ color: 0xF06277, roughness: 0.35 });
+            const goldMat = new THREE.MeshStandardMaterial({ color: 0xD4AF37, metalness: 0.7, roughness: 0.25 });
+
+            if (index % 2 === 0) {
+                const leftLoop = new THREE.Mesh(new THREE.ConeGeometry(0.062, 0.13, 16), redMat);
+                leftLoop.rotation.z = -Math.PI / 2;
+                leftLoop.position.set(-0.055, 0, 0);
+
+                const rightLoop = new THREE.Mesh(new THREE.ConeGeometry(0.062, 0.13, 16), redMat);
+                rightLoop.rotation.z = Math.PI / 2;
+                rightLoop.position.set(0.055, 0, 0);
+
+                const knot = new THREE.Mesh(new THREE.SphereGeometry(0.034, 16, 16), goldMat);
+                knot.position.set(0, 0, 0.012);
+
+                group.add(leftLoop, rightLoop, knot);
+            } else {
+                const heartShape = new THREE.Shape();
+                heartShape.moveTo(0, -0.045);
+                heartShape.bezierCurveTo(-0.07, 0.01, -0.05, 0.075, 0, 0.03);
+                heartShape.bezierCurveTo(0.05, 0.075, 0.07, 0.01, 0, -0.045);
+                const extrude = new THREE.ExtrudeGeometry(heartShape, { depth: 0.022, bevelEnabled: true, bevelThickness: 0.008, bevelSize: 0.008 });
+                extrude.center();
+                const heartMesh = new THREE.Mesh(extrude, pinkMat);
+                group.add(heartMesh);
+            }
+            group.position.set(0, -0.02, 0.026);
+            return group;
+        }
+
+        function createHangingPolaroidsOnSurface(treeMeshes, treeHeight, fallbackMaxR) {
+            const count = State.rawImageURLs.length;
+            const minY = treeHeight * 0.39;
+            const maxY = treeHeight * 0.75;
+
+            const cardW = 0.66, cardH = 0.82, cardD = 0.018;
+            const backMat = new THREE.MeshBasicMaterial({ color: 0xF5F2EB });
+            const surfaceRaycaster = new THREE.Raycaster();
+
+            for (let i = 0; i < count; i++) {
+                const anchorGroup = new THREE.Group();
+
+                const t = count === 1 ? 0.5 : i / (count - 1);
+                const localY = minY + t * (maxY - minY);
+                const angle = i * 2.39996 + 0.6;
+
+                let topMaxR = (1 - t * 0.65) * fallbackMaxR * 0.75;
+                let bottomMaxR = topMaxR + 0.25;
+
+                [-0.32, -0.16, 0, 0.16, 0.32].forEach(angleOffset => {
+                    const a = angle + angleOffset;
+                    const dx = Math.cos(a), dz = Math.sin(a);
+
+                    [localY + 0.08, localY - cardH * 0.25, localY - cardH * 0.5].forEach(sy => {
+                        const wy = sy + treeRootGroup.position.y;
+                        surfaceRaycaster.set(new THREE.Vector3(dx * 10, wy, dz * 10), new THREE.Vector3(-dx, 0, -dz).normalize());
+                        const hits = surfaceRaycaster.intersectObjects(treeMeshes, true);
+                        if (hits.length > 0) {
+                            const r = Math.hypot(hits[0].point.x, hits[0].point.z);
+                            if (r > topMaxR) topMaxR = r;
+                        }
+                    });
+
+                    [localY - cardH * 0.75, localY - cardH * 1.0, localY - cardH * 1.15].forEach(sy => {
+                        const wy = sy + treeRootGroup.position.y;
+                        surfaceRaycaster.set(new THREE.Vector3(dx * 10, wy, dz * 10), new THREE.Vector3(-dx, 0, -dz).normalize());
+                        const hits = surfaceRaycaster.intersectObjects(treeMeshes, true);
+                        if (hits.length > 0) {
+                            const r = Math.hypot(hits[0].point.x, hits[0].point.z);
+                            if (r > bottomMaxR) bottomMaxR = r;
+                        }
+                    });
+                });
+
+                const hangRadius = Math.max(topMaxR + 0.24, bottomMaxR + 0.08) + 0.14;
+                const dirX = Math.cos(angle), dirZ = Math.sin(angle);
+
+                anchorGroup.position.set(dirX * hangRadius, localY, dirZ * hangRadius);
+                anchorGroup.rotation.y = -angle + Math.PI / 2;
+
+                const radialDiff = Math.max(0.1, bottomMaxR - topMaxR + 0.14);
+                const naturalSlopeAngle = -Math.min(0.28, Math.atan2(radialDiff, cardH));
+                const naturalRollZ = ((i % 2 === 0 ? 1 : -1) * 0.055) + (Math.random() - 0.5) * 0.03;
+
+                const polaroidCard = new THREE.Group();
+                polaroidCard.rotation.set(naturalSlopeAngle, (Math.random() - 0.5) * 0.08, naturalRollZ);
+
+                const cuteTopper = create3DCuteTopper(i);
+                polaroidCard.add(cuteTopper);
+
+                createPolaroidTexture(State.rawImageURLs[i], i, (frontTex) => {
+                    const frontMat = new THREE.MeshBasicMaterial({ map: frontTex });
+
+                    const bodyMats = [backMat, backMat, backMat, backMat, frontMat, backMat];
+                    const photoMesh = new THREE.Mesh(new THREE.BoxGeometry(cardW, cardH, cardD), bodyMats);
+                    photoMesh.position.set(0, -cardH / 2 + 0.02, 0);
+                    polaroidCard.add(photoMesh);
+
+                    polaroidCard.userData = {
+                        isPolaroid: true,
+                        index: i,
+                        anchorGroup: anchorGroup,
+                        initialRot: polaroidCard.rotation.clone(),
+                        swayPhase: Math.random() * Math.PI * 2
+                    };
+                    polaroids.push(polaroidCard);
+                });
+
+                anchorGroup.add(polaroidCard);
+                treeModelGroup.add(anchorGroup);
+            }
+        }
+
+        // --- 雪花與星塵特效 ---
+        let starSparkleTexture = null;
+        function getStarSparkleTexture() {
+            if (starSparkleTexture) return starSparkleTexture;
+            const c = document.createElement('canvas');
+            c.width = 128; c.height = 128;
+            const ctx = c.getContext('2d');
+
+            const grad = ctx.createRadialGradient(64, 64, 2, 64, 64, 60);
+            grad.addColorStop(0, 'rgba(255, 252, 235, 1)');
+            grad.addColorStop(0.25, 'rgba(255, 215, 110, 0.85)');
+            grad.addColorStop(0.6, 'rgba(212, 175, 55, 0.2)');
+            grad.addColorStop(1, 'rgba(212, 175, 55, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 128, 128);
+
+            ctx.fillStyle = '#FFFDF5';
+            ctx.beginPath();
+            ctx.moveTo(64, 6); ctx.quadraticCurveTo(68, 58, 122, 64);
+            ctx.quadraticCurveTo(68, 70, 64, 122);
+            ctx.quadraticCurveTo(60, 70, 6, 64);
+            ctx.quadraticCurveTo(60, 58, 64, 6);
+            ctx.fill();
+
+            starSparkleTexture = new THREE.CanvasTexture(c);
+            return starSparkleTexture;
+        }
+
+        function createSnowParticles() {
+            const count = 1100;
+            const geo = new THREE.BufferGeometry();
+            const pos = new Float32Array(count * 3);
+            for (let i = 0; i < count * 3; i++) pos[i] = (Math.random() - 0.5) * 28;
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+
+            const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+            const ctx = c.getContext('2d');
+            const grad = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+            grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+            grad.addColorStop(0.5, 'rgba(235,245,255,0.45)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad; ctx.fillRect(0, 0, 64, 64);
+
+            const mat = new THREE.PointsMaterial({
+                size: 0.25,
+                map: new THREE.CanvasTexture(c),
+                transparent: true,
+                opacity: 0.85,
+                depthWrite: false
+            });
+            snowSystem = new THREE.Points(geo, mat);
+            scene.add(snowSystem);
+        }
+
+        function emitGoldenSparkles(originY = 0.8, count = 85, spreadRadius = 3.2) {
+            const geo = new THREE.BufferGeometry();
+            const positions = new Float32Array(count * 3);
+            const velocities = [];
+
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.random() * spreadRadius;
+                positions[i * 3] = Math.cos(angle) * r * 0.5;
+                positions[i * 3 + 1] = originY + (Math.random() - 0.4) * 1.8;
+                positions[i * 3 + 2] = Math.sin(angle) * r * 0.5 + 0.5;
+
+                velocities.push({
+                    vx: Math.cos(angle) * (0.015 + Math.random() * 0.025),
+                    vy: 0.018 + Math.random() * 0.03,
+                    vz: Math.sin(angle) * (0.015 + Math.random() * 0.025)
+                });
+            }
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+            const mat = new THREE.PointsMaterial({
+                size: 0.52,
+                map: getStarSparkleTexture(),
+                transparent: true,
+                opacity: 0.95,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+
+            const points = new THREE.Points(geo, mat);
+            scene.add(points);
+
+            const effectObj = { points, velocities };
+            magicEffects.push(effectObj);
+
+            gsap.to(mat, {
+                opacity: 0,
+                duration: 2.2,
+                ease: 'power2.out',
+                onComplete: () => {
+                    scene.remove(points);
+                    geo.dispose();
+                    mat.dispose();
+                    magicEffects = magicEffects.filter(e => e !== effectObj);
+                }
+            });
+        }
+
+        // =========================================================================
+        // 狀態切換動畫
+        // =========================================================================
+        function openPostcard() {
+            if (State.mode !== 'CARD_CLOSED' || State.isAnimating) return;
+            State.isAnimating = true;
+            playSound('open');
+            emitGoldenSparkles(1.0, 75, 2.8);
+
+            cardInnerRightMesh.material.map = drawPostcardInnerRightTexture();
+            cardInnerRightMesh.material.needsUpdate = true;
+
+            gsap.to(cardLeftPivot.rotation, { y: 0.15, duration: 1.35, ease: 'power2.inOut' });
+            gsap.to(cardGroup.position, {
+                x: 0, z: 1.2, duration: 1.35, ease: 'power2.inOut',
+                onComplete: () => {
+                    State.mode = 'CARD_OPEN';
+                    State.isAnimating = false;
+                }
+            });
+        }
+
+        function dismissCardAndShowTree() {
+            if (State.mode !== 'CARD_OPEN' || State.isAnimating) return;
+            State.isAnimating = true;
+            playSound('chime');
+
+            const tl = gsap.timeline();
+            tl.to(cardLeftPivot.rotation, { y: Math.PI, duration: 0.7, ease: 'power2.inOut' }, 0);
+            tl.to(cardGroup.position, { x: -1.7, duration: 0.7, ease: 'power2.inOut' }, 0);
+
+            tl.to(cardGroup.position, { y: 2.2, duration: 0.55, ease: 'power2.in' }, 0.65);
+            tl.to(cardGroup.scale, {
+                x: 0.001, y: 0.001, z: 0.001, duration: 0.55, ease: 'back.in(1.4)',
+                onComplete: () => {
+                    cardGroup.visible = false;
+                    emitGoldenSparkles(0.8, 95, 3.8);
+                }
+            }, 0.65);
+
+            tl.add(() => {
+                treeRootGroup.visible = true;
+            }, 1.22);
+            tl.to(controls.target, { x: 0, y: 1.05, z: 0, duration: 1.3, ease: 'power2.out' }, 1.22);
+            tl.to(camera.position, { x: 0, y: 1.4, z: 11.2, duration: 1.3, ease: 'power2.out' }, 1.22);
+            tl.to(treeRootGroup.scale, {
+                x: 1, y: 1, z: 1, duration: 1.35, ease: 'back.out(1.25)',
+                onComplete: () => {
+                    State.mode = 'TREE_VIEW';
+                    State.isAnimating = false;
+                }
+            }, 1.22);
+        }
+
+        function getNextUnviewedPolaroid() {
+            const unviewed = polaroids.filter(p => !State.viewedSet.has(p.userData.index));
+            if (unviewed.length > 0) return unviewed[0];
+            return polaroids[Math.floor(Math.random() * polaroids.length)];
+        }
+
+        function zoomPolaroid(polaroidCard) {
+            if (State.mode !== 'TREE_VIEW' || State.isAnimating || !polaroidCard) return;
+            State.isAnimating = true;
+            playSound('open');
+
+            State.activePolaroid = polaroidCard;
+            State.viewedSet.add(polaroidCard.userData.index);
+
+            controls.enableZoom = false;
+            overlayScene.attach(polaroidCard);
+
+            const camDir = camera.getWorldDirection(new THREE.Vector3());
+            const camUp = camera.up.clone().applyQuaternion(camera.quaternion).normalize();
+            const targetPos = camera.position.clone()
+                .add(camDir.multiplyScalar(3.2))
+                .add(camUp.multiplyScalar(0.26));
+
+            gsap.to(polaroidCard.position, {
+                x: targetPos.x, y: targetPos.y, z: targetPos.z,
+                duration: 0.85, ease: 'power3.out'
+            });
+            gsap.to(polaroidCard.scale, {
+                x: 1.55, y: 1.55, z: 1.55,
+                duration: 0.85, ease: 'back.out(1.2)'
+            });
+
+            const lookMatrix = new THREE.Matrix4().lookAt(camera.position, targetPos, camera.up);
+            const targetQuat = new THREE.Quaternion().setFromRotationMatrix(lookMatrix);
+            gsap.to(polaroidCard.quaternion, {
+                x: targetQuat.x, y: targetQuat.y, z: targetQuat.z, w: targetQuat.w,
+                duration: 0.85, ease: 'power3.out',
+                onComplete: () => {
+                    State.mode = 'PHOTO_ZOOM';
+                    State.isAnimating = false;
+                }
+            });
+        }
+
+        function returnPolaroidToTree() {
+            if (State.mode !== 'PHOTO_ZOOM' || State.isAnimating || !State.activePolaroid) return;
+            State.isAnimating = true;
+            playSound('chime');
+
+            const polaroidCard = State.activePolaroid;
+            const anchorGroup = polaroidCard.userData.anchorGroup;
+            const initRot = polaroidCard.userData.initialRot;
+
+            anchorGroup.attach(polaroidCard);
+
+            gsap.to(polaroidCard.position, { x: 0, y: 0, z: 0, duration: 0.75, ease: 'power2.inOut' });
+            gsap.to(polaroidCard.scale, { x: 1, y: 1, z: 1, duration: 0.75, ease: 'power2.inOut' });
+            gsap.to(polaroidCard.rotation, {
+                x: initRot.x, y: initRot.y, z: initRot.z,
+                duration: 0.75, ease: 'power2.inOut',
+                onComplete: () => {
+                    controls.enableZoom = true;
+                    State.activePolaroid = null;
+                    if (State.viewedSet.size >= State.rawImageURLs.length) {
+                        triggerEndingSequence();
+                    } else {
+                        State.mode = 'TREE_VIEW';
+                        State.isAnimating = false;
+                    }
+                }
+            });
+        }
+
+        function triggerEndingSequence() {
+            State.mode = 'ENDING';
+            playSound('finale');
+            emitGoldenSparkles(1.2, 110, 4.2);
+
+            gsap.to(treeRootGroup.rotation, { y: treeRootGroup.rotation.y + Math.PI * 1.2, duration: 1.35, ease: 'power2.inOut' });
+            gsap.to(treeRootGroup.scale, {
+                x: 0.001, y: 0.001, z: 0.001,
+                duration: 1.35, ease: 'power3.in',
+                onComplete: () => {
+                    treeRootGroup.visible = false;
+                    State.isAnimating = false;
+                    const endingOverlay = document.getElementById('ending-overlay');
+                    endingOverlay.classList.remove('hidden');
+                    endingOverlay.classList.add('flex');
+                    requestAnimationFrame(() => {
+                        endingOverlay.style.opacity = '1';
+                    });
+                }
+            });
+        }
+
+        function onPointerDown(e) {
+            if (State.mode === 'EDIT' || State.mode === 'ENDING') return;
+
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            if (State.mode === 'CARD_CLOSED') {
+                if (raycaster.intersectObject(cardGroup, true).length > 0) openPostcard();
+            } else if (State.mode === 'CARD_OPEN') {
+                if (raycaster.intersectObject(cardGroup, true).length > 0) dismissCardAndShowTree();
+            } else if (State.mode === 'TREE_VIEW') {
+                const hits = raycaster.intersectObjects(polaroids, true);
+                if (hits.length > 0) {
+                    let obj = hits[0].object;
+                    while (obj && !obj.userData?.isPolaroid && obj.parent) obj = obj.parent;
+                    if (obj && obj.userData?.isPolaroid) zoomPolaroid(obj);
+                }
+            } else if (State.mode === 'PHOTO_ZOOM') {
+                returnPolaroidToTree();
+            }
+        }
+
+        // =========================================================================
+        // MediaPipe 手勢辨識
+        // =========================================================================
+        let gestureQueue = [];
+        let lastActionTimestamp = 0;
+        let mediaPipeStarted = false;
+
+        function initMediaPipeHands() {
+            if (mediaPipeStarted) return;
+            mediaPipeStarted = true;
+
+            const videoEl = document.getElementById('webcam-video');
+            const canvasEl = document.getElementById('webcam-canvas');
+            const ctx = canvasEl.getContext('2d');
+            document.getElementById('webcam-wrapper').style.display = 'block';
+
+            const hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.65,
+                minTrackingConfidence: 0.65
+            });
+
+            hands.onResults((results) => {
+                ctx.save();
+                ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+                ctx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
+
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    const lm = results.multiHandLandmarks[0];
+                    drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: '#D4AF37', lineWidth: 2 });
+                    drawLandmarks(ctx, lm, { color: '#B8292F', lineWidth: 1, radius: 2 });
+
+                    const dist = (a, b) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y);
+                    const palmSize = Math.max(dist(0, 9), 0.05);
+
+                    const extCount = [8, 12, 16, 20].filter(tip => dist(0, tip) / palmSize > 1.55).length;
+                    const curlCount = [8, 12, 16, 20].filter(tip => dist(0, tip) / palmSize < 1.22).length;
+
+                    let detected = 'IDLE';
+                    if (extCount >= 4) detected = 'OPEN';
+                    else if (curlCount >= 3) detected = 'FIST';
+
+                    gestureQueue.push(detected);
+                    if (gestureQueue.length > 6) gestureQueue.shift();
+
+                    const openVotes = gestureQueue.filter(g => g === 'OPEN').length;
+                    const fistVotes = gestureQueue.filter(g => g === 'FIST').length;
+
+                    const now = Date.now();
+                    if (now - lastActionTimestamp > 1200) {
+                        if (openVotes >= 4) {
+                            if (State.mode === 'CARD_CLOSED') { openPostcard(); lastActionTimestamp = now; }
+                            else if (State.mode === 'TREE_VIEW' && polaroids.length > 0) {
+                                zoomPolaroid(getNextUnviewedPolaroid());
+                                lastActionTimestamp = now;
+                            }
+                        } else if (fistVotes >= 4) {
+                            if (State.mode === 'CARD_OPEN') { dismissCardAndShowTree(); lastActionTimestamp = now; }
+                            else if (State.mode === 'PHOTO_ZOOM') { returnPolaroidToTree(); lastActionTimestamp = now; }
+                        }
+                    }
+
+                    State.handX = lm[9].x;
+                }
+                ctx.restore();
+            });
+
+            new Camera(videoEl, {
+                onFrame: async () => { await hands.send({ image: videoEl }); },
+                width: 320, height: 240
+            }).start().catch(() => {
+                document.getElementById('webcam-wrapper').style.display = 'none';
+            });
+        }
+
+        // --- 啟動播放流程 ---
+        function startExperienceFlow(fromShare = false) {
+            if (!State.loadedGLTF) {
+                alert('尚未讀取到資料夾中的 christmas_tree.glb 模型！請確認 christmas_tree.glb 與此 HTML 檔案放在同一個資料夾下。');
+                return;
+            }
+
+            if (!fromShare) {
+                const toVal = document.getElementById('card-to').value.trim();
+                const bodyVal = document.getElementById('card-text').value.trim();
+                const fromVal = document.getElementById('card-from').value.trim();
+                if (toVal) State.toText = toVal;
+                if (bodyVal) State.bodyText = bodyVal;
+                if (fromVal) State.fromText = fromVal;
+            }
+
+            if (State.rawImageURLs.length === 0) {
+                const defaultThemes = [
+                    { bg: '#9E1F24', type: 'gingerbread' },
+                    { bg: '#1F4E3D', type: 'bell' },
+                    { bg: '#8C6239', type: 'bauble' },
+                    { bg: '#2B4C6F', type: 'reindeer' }
+                ];
+                State.rawImageURLs = defaultThemes.map((item) => {
+                    const c = document.createElement('canvas'); c.width = 600; c.height = 600;
+                    const ctx = c.getContext('2d');
+                    ctx.fillStyle = item.bg;
+                    ctx.fillRect(0, 0, 600, 600);
+                    ctx.strokeStyle = 'rgba(247,243,235,0.45)';
+                    ctx.lineWidth = 10;
+                    ctx.strokeRect(36, 36, 528, 528);
+                    drawRefinedPolaroidMotif(ctx, 300, 300, 5.2, item.type);
+                    return c.toDataURL('image/png');
+                });
+                State.shareImageURLs = State.rawImageURLs;
+            }
+
+            setupGLBTreeModel(State.loadedGLTF);
+
+            cardGroup.visible = true;
+            const overlay = document.getElementById('edit-overlay');
+            overlay.style.opacity = '0';
+            setTimeout(() => overlay.style.display = 'none', 700);
+
+            State.mode = 'CARD_CLOSED';
+            initMediaPipeHands();
+        }
+
+        // --- 主渲染迴圈 ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const elapsed = clock.getElapsedTime();
+            controls.update();
+
+            if (snowSystem) {
+                const arr = snowSystem.geometry.attributes.position.array;
+                for (let i = 0; i < arr.length; i += 3) {
+                    arr[i] += Math.sin(elapsed * 0.6 + i) * 0.003;
+                    arr[i + 1] -= 0.024;
+                    if (arr[i + 1] < -9) arr[i + 1] = 16;
+                }
+                snowSystem.geometry.attributes.position.needsUpdate = true;
+            }
+
+            magicEffects.forEach(ef => {
+                const posArr = ef.points.geometry.attributes.position.array;
+                for (let i = 0; i < ef.velocities.length; i++) {
+                    posArr[i * 3] += ef.velocities[i].vx;
+                    posArr[i * 3 + 1] += ef.velocities[i].vy;
+                    posArr[i * 3 + 2] += ef.velocities[i].vz;
+                }
+                ef.points.geometry.attributes.position.needsUpdate = true;
+            });
+
+            if (State.mode === 'TREE_VIEW') {
+                polaroids.forEach(p => {
+                    if (p !== State.activePolaroid && !State.isAnimating) {
+                        p.rotation.z = p.userData.initialRot.z + Math.sin(elapsed * 1.6 + p.userData.swayPhase) * 0.025;
+                    }
+                });
+                const targetRotY = (0.5 - State.handX) * Math.PI * 1.6;
+                treeRootGroup.rotation.y += (targetRotY - treeRootGroup.rotation.y) * 0.06;
+            } else if (State.mode === 'PHOTO_ZOOM' && State.activePolaroid && !State.isAnimating) {
+                const camDir = camera.getWorldDirection(new THREE.Vector3());
+                const camUp = camera.up.clone().applyQuaternion(camera.quaternion).normalize();
+                const lockPos = camera.position.clone()
+                    .add(camDir.multiplyScalar(3.2))
+                    .add(camUp.multiplyScalar(0.26));
+                State.activePolaroid.position.copy(lockPos);
+                State.activePolaroid.lookAt(camera.position);
+            }
+
+            renderer.clear();
+            renderer.render(scene, camera);
+
+            if (overlayScene.children.length > 2) {
+                renderer.clearDepth();
+                renderer.render(overlayScene, camera);
+            }
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- UI 事件綁定 ---
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (document.fonts) await document.fonts.ready;
+            const isFromShareLink = await checkSharedDataFromURL();
+
+            initThree();
+            cardGroup.visible = false;
+            animate();
+
+            preloadDefaultGLB((loaded) => {
+                if (loaded && isFromShareLink) {
+                    startExperienceFlow(true);
+                }
+            });
+
+            const textEl = document.getElementById('card-text');
+            textEl.addEventListener('input', () => {
+                document.getElementById('char-count').innerText = textEl.value.length;
+            });
+
+            document.getElementById('card-images').addEventListener('change', async (e) => {
+                const files = Array.from(e.target.files).slice(0, 10);
+                document.getElementById('upload-status').innerText = `(處理中...)`;
+                State.rawImageURLs = files.map(f => URL.createObjectURL(f));
+                State.shareImageURLs = await Promise.all(files.map(f => compressImageForShare(f)));
+                document.getElementById('upload-status').innerText = `(已選 ${files.length}/10 張)`;
+
+                const strip = document.getElementById('photo-preview-strip');
+                strip.innerHTML = '';
+                if (files.length > 0) {
+                    strip.classList.remove('hidden');
+                    State.rawImageURLs.forEach(url => {
+                        const frame = document.createElement('div');
+                        frame.className = 'bg-[#FCFBF7] p-1 pb-3 rounded-sm shadow-md border border-black/10 shrink-0 transition';
+                        const img = document.createElement('img');
+                        img.src = url;
+                        img.className = 'w-10 h-10 object-cover';
+                        frame.appendChild(img);
+                        strip.appendChild(frame);
+                    });
+                }
+            });
+
+            document.getElementById('copy-link-end-btn').addEventListener('click', generateAndCopyShareLink);
+
+            document.getElementById('replay-tree-btn').addEventListener('click', () => {
+                const endingOverlay = document.getElementById('ending-overlay');
+                endingOverlay.style.opacity = '0';
+                setTimeout(() => {
+                    endingOverlay.classList.add('hidden');
+                    endingOverlay.classList.remove('flex');
+                }, 700);
+
+                State.viewedSet.clear();
+                treeRootGroup.visible = true;
+                gsap.to(treeRootGroup.scale, {
+                    x: 1, y: 1, z: 1, duration: 1.2, ease: 'back.out(1.25)',
+                    onComplete: () => {
+                        State.mode = 'TREE_VIEW';
+                    }
+                });
+            });
+
+            document.getElementById('start-btn').addEventListener('click', () => startExperienceFlow(false));
+        });
+    </script>
+</body>
+</html>
